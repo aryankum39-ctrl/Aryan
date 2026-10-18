@@ -14,7 +14,8 @@ import {
   CheckCircle2, 
   AlertCircle,
   PhoneCall,
-  Plus
+  Plus,
+  Image as ImageIcon
 } from 'lucide-react';
 
 const SofaRepair: React.FC = () => {
@@ -27,16 +28,25 @@ const SofaRepair: React.FC = () => {
   const [isStreamReady, setIsStreamReady] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
   const [justCaptured, setJustCaptured] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [selectedPreviewImage, setSelectedPreviewImage] = useState<string | null>(null);
   const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
   const [quoteSubmitted, setQuoteSubmitted] = useState(false);
   const [quoteFormData, setQuoteFormData] = useState({ name: '', phone: '', issue: '' });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const galleryInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Play shutter sound via Web Audio API
+  // Show temporary toast message
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 2800);
+  }, []);
+
+  // Play realistic shutter audio via Web Audio API
   const playShutterSound = useCallback(() => {
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -46,22 +56,23 @@ const SofaRepair: React.FC = () => {
       const gain = ctx.createGain();
 
       osc.type = 'sine';
-      osc.frequency.setValueAtTime(800, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(400, ctx.currentTime + 0.08);
+      osc.frequency.setValueAtTime(850, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(320, ctx.currentTime + 0.09);
 
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.08);
+      gain.gain.setValueAtTime(0.35, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.09);
 
       osc.connect(gain);
       gain.connect(ctx.destination);
 
       osc.start();
-      osc.stop(ctx.currentTime + 0.08);
+      osc.stop(ctx.currentTime + 0.09);
     } catch {
-      // Audio playback fails silently if restricted
+      // Audio playback silently ignores if blocked
     }
   }, []);
 
+  // Stop camera media stream
   const stopCameraStream = useCallback(() => {
     if (stream) {
       stream.getTracks().forEach(track => {
@@ -77,21 +88,25 @@ const SofaRepair: React.FC = () => {
     setIsStreamReady(false);
   }, [stream]);
 
+  // Start Camera Stream
   const startCamera = async (overrideFacingMode?: 'environment' | 'user') => {
     const targetFacing = overrideFacingMode || facingMode;
     setCameraLoading(true);
     setCameraError(null);
     setIsCameraActive(true);
 
-    // Stop existing stream if switching
     if (stream) {
-      stream.getTracks().forEach(track => track.stop());
+      stream.getTracks().forEach(track => {
+        try {
+          track.stop();
+        } catch {}
+      });
       setStream(null);
     }
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Camera API is not supported in this browser environment.');
+        throw new Error('Camera device access is not supported in this browser.');
       }
 
       let mediaStream: MediaStream;
@@ -105,7 +120,7 @@ const SofaRepair: React.FC = () => {
           audio: false
         });
       } catch {
-        // Fallback to simpler constraints
+        // Fallback for devices without high-res or specific facing mode
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: true,
           audio: false
@@ -117,13 +132,19 @@ const SofaRepair: React.FC = () => {
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        videoRef.current.play().catch(err => console.warn('Autoplay error:', err));
+        videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.muted = true;
+        videoRef.current.play().then(() => {
+          setIsStreamReady(true);
+        }).catch(err => {
+          console.warn('Video play warning:', err);
+        });
       }
     } catch (err: unknown) {
-      console.error('Error accessing camera:', err);
+      console.warn('Live camera stream not available:', err);
       setCameraLoading(false);
       setCameraError(
-        'Camera permission not available or device has no camera. You can snap or select photos directly from your phone gallery.'
+        'Direct live viewfinder is restricted in this window. Tap the Capture button or "Take Photo" below to use your device camera directly!'
       );
     }
   };
@@ -141,21 +162,27 @@ const SofaRepair: React.FC = () => {
     startCamera(nextMode);
   };
 
-  // Video element ref callback
+  // Video ref callback
   const handleVideoRef = useCallback((element: HTMLVideoElement | null) => {
     videoRef.current = element;
     if (element && stream) {
-      if (element.srcObject !== stream) {
-        element.srcObject = stream;
-      }
-      element.play().catch(() => {});
+      element.srcObject = stream;
+      element.setAttribute('playsinline', 'true');
+      element.muted = true;
+      element.play().then(() => {
+        setIsStreamReady(true);
+      }).catch(() => {});
     }
   }, [stream]);
 
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {});
+      videoRef.current.setAttribute('playsinline', 'true');
+      videoRef.current.muted = true;
+      videoRef.current.play().then(() => {
+        setIsStreamReady(true);
+      }).catch(() => {});
     }
   }, [stream, isCameraActive]);
 
@@ -167,70 +194,96 @@ const SofaRepair: React.FC = () => {
     };
   }, [stream]);
 
-  // Capture image from video stream
+  // Capture Image (either from video stream or fallback directly to native camera)
   const captureImage = () => {
     const video = videoRef.current;
-    if (!video) return;
 
-    // Trigger visual shutter flash
-    setIsFlashing(true);
-    setTimeout(() => setIsFlashing(false), 150);
+    // Check if video is actually playing and has frames
+    if (video && stream && video.videoWidth > 0 && video.readyState >= 2) {
+      // Trigger visual flash
+      setIsFlashing(true);
+      setTimeout(() => setIsFlashing(false), 140);
 
-    // Vibration on mobile
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      // Trigger mobile vibration
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(60);
+        } catch {}
+      }
+
+      playShutterSound();
+
       try {
-        navigator.vibrate(60);
-      } catch {}
+        const canvas = document.createElement('canvas');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        const context = canvas.getContext('2d');
+        if (context) {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = canvas.toDataURL('image/jpeg', 0.9);
+
+          if (imageData && imageData.length > 200) {
+            setCapturedImages(prev => [imageData, ...prev]);
+            setJustCaptured(true);
+            setTimeout(() => setJustCaptured(false), 2400);
+            showToast(`Photo #${capturedImages.length + 1} Captured!`);
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('Error drawing frame to canvas:', err);
+      }
     }
 
-    playShutterSound();
-
-    try {
-      const canvas = canvasRef.current || document.createElement('canvas');
-      const width = video.videoWidth > 0 ? video.videoWidth : 1280;
-      const height = video.videoHeight > 0 ? video.videoHeight : 720;
-
-      canvas.width = width;
-      canvas.height = height;
-
-      const context = canvas.getContext('2d');
-      if (context) {
-        context.drawImage(video, 0, 0, width, height);
-        const imageData = canvas.toDataURL('image/jpeg', 0.88);
-        if (imageData && imageData.length > 200) {
-          setCapturedImages(prev => [imageData, ...prev]);
-          setJustCaptured(true);
-          setTimeout(() => setJustCaptured(false), 2200);
-        }
-      }
-    } catch (err) {
-      console.error('Error capturing image:', err);
+    // Fallback: If video stream is not active or canvas capture fails, launch device camera
+    if (cameraInputRef.current) {
+      showToast('Opening Device Camera...');
+      cameraInputRef.current.click();
     }
   };
 
-  // File upload / native camera capture handler
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  // Handle image files from Device Camera or Gallery
+  const handleImageFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file) continue;
+
       const reader = new FileReader();
       reader.onload = event => {
         if (event.target?.result) {
-          setCapturedImages(prev => [event.target!.result as string, ...prev]);
+          const imgUrl = event.target.result as string;
+          setCapturedImages(prev => [imgUrl, ...prev]);
+          playShutterSound();
+          setJustCaptured(true);
+          setTimeout(() => setJustCaptured(false), 2400);
+          showToast('Photo Added Successfully!');
         }
       };
       reader.readAsDataURL(file);
     }
-
-    e.target.value = '';
-    closeCameraModal();
   };
 
   const removeImage = (index: number) => {
     setCapturedImages(prev => prev.filter((_, i) => i !== index));
+    showToast('Photo removed');
+  };
+
+  // Add Demo Sofa Photo for testing
+  const addSamplePhoto = () => {
+    const demoPhotos = [
+      'https://images.unsplash.com/photo-1555041469-a586c61ea9bc?auto=format&fit=crop&q=80&w=900',
+      'https://images.unsplash.com/photo-1586023492125-27b2c045efd7?auto=format&fit=crop&q=80&w=900',
+      'https://images.unsplash.com/photo-1493663284031-b7e3aefcae8e?auto=format&fit=crop&q=80&w=900'
+    ];
+    const nextPhoto = demoPhotos[capturedImages.length % demoPhotos.length];
+    setCapturedImages(prev => [nextPhoto, ...prev]);
+    playShutterSound();
+    setJustCaptured(true);
+    setTimeout(() => setJustCaptured(false), 2400);
+    showToast('Sample Sofa Photo Added!');
   };
 
   const handleQuoteSubmit = (e: React.FormEvent) => {
@@ -240,21 +293,52 @@ const SofaRepair: React.FC = () => {
       setQuoteSubmitted(false);
       setIsQuoteModalOpen(false);
       setQuoteFormData({ name: '', phone: '', issue: '' });
+      showToast('Quote request sent! We will call you soon.');
     }, 2500);
   };
 
   return (
     <section className="py-24 bg-white relative overflow-hidden" id="repair">
-      {/* Hidden File Input for Native Phone Camera / Gallery */}
+      {/* Native Camera Trigger (forces camera capture on phone) */}
       <input
         type="file"
-        ref={fileInputRef}
+        ref={cameraInputRef}
         accept="image/*"
         capture="environment"
-        multiple
-        onChange={handleFileUpload}
+        onChange={e => {
+          handleImageFiles(e.target.files);
+          e.target.value = '';
+        }}
         className="hidden"
       />
+
+      {/* Gallery / File Picker */}
+      <input
+        type="file"
+        ref={galleryInputRef}
+        accept="image/*"
+        multiple
+        onChange={e => {
+          handleImageFiles(e.target.files);
+          e.target.value = '';
+        }}
+        className="hidden"
+      />
+
+      {/* Floating Global Toast Notification */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className="fixed top-24 left-1/2 -translate-x-1/2 z-[300] bg-charcoal text-white text-xs font-semibold px-5 py-2.5 rounded-full shadow-2xl flex items-center gap-2 border border-white/10 backdrop-blur-md"
+          >
+            <CheckCircle2 size={16} className="text-emerald-400" />
+            <span>{toastMessage}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="container mx-auto px-4">
         <div className="max-w-6xl mx-auto">
@@ -277,7 +361,7 @@ const SofaRepair: React.FC = () => {
                 <p className="text-charcoal/60 leading-relaxed">
                   Is your favorite sofa showing signs of wear, sagging cushions, or torn fabric?
                   Our master craftsmen specialize in restoring luxury furniture to pristine condition.
-                  Snap a quick photo using our camera tool for an instant condition assessment and free quote.
+                  Snap photos using our camera tool for an instant condition assessment and free quote.
                 </p>
               </div>
 
@@ -334,7 +418,7 @@ const SofaRepair: React.FC = () => {
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true, margin: '-60px' }}
               transition={{ duration: 0.75, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
-              className="relative min-h-[460px] bg-cream rounded-3xl p-8 border border-charcoal/5 flex flex-col justify-between"
+              className="relative min-h-[480px] bg-cream rounded-3xl p-6 sm:p-8 border border-charcoal/5 flex flex-col justify-between"
             >
               <div>
                 <div className="flex justify-between items-center mb-6">
@@ -342,34 +426,49 @@ const SofaRepair: React.FC = () => {
                     <h3 className="text-lg font-serif">Condition Assessment</h3>
                     <p className="text-xs text-charcoal/50">Capture photos for expert inspection</p>
                   </div>
-                  <span className="text-[11px] font-bold uppercase tracking-wider px-3 py-1 bg-wood/10 text-wood rounded-full">
-                    {capturedImages.length} {capturedImages.length === 1 ? 'Photo' : 'Photos'} Captured
+                  <span className="text-[11px] font-bold uppercase tracking-wider px-3.5 py-1 bg-wood/10 text-wood rounded-full">
+                    {capturedImages.length} {capturedImages.length === 1 ? 'Photo' : 'Photos'} Saved
                   </span>
                 </div>
 
                 {capturedImages.length === 0 ? (
-                  <div className="h-[280px] flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-charcoal/15 rounded-2xl bg-white/50">
-                    <div className="w-16 h-16 bg-wood/10 text-wood rounded-full flex items-center justify-center mb-4">
+                  <div className="min-h-[290px] flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-charcoal/15 rounded-2xl bg-white/60">
+                    <div className="w-16 h-16 bg-wood/10 text-wood rounded-full flex items-center justify-center mb-4 ring-8 ring-wood/5">
                       <Camera size={32} />
                     </div>
-                    <h4 className="text-sm font-bold text-charcoal mb-1">No Photos Added Yet</h4>
+                    <h4 className="text-sm font-bold text-charcoal mb-1">Capture Sofa Damage Photos</h4>
                     <p className="text-xs text-charcoal/60 max-w-xs mb-6">
-                      Click the camera button below to take a photo of your sofa or upload from your device.
+                      Click below to capture with live camera, open your phone's camera, or upload photos.
                     </p>
-                    <div className="flex flex-wrap gap-3 justify-center">
+                    <div className="flex flex-wrap gap-2.5 justify-center">
                       <button
                         onClick={() => startCamera()}
                         className="px-5 py-2.5 bg-wood text-white rounded-full text-xs font-semibold flex items-center gap-2 hover:bg-wood/90 transition shadow-md"
                       >
                         <Camera size={16} />
-                        Open Live Camera
+                        Open Camera
                       </button>
                       <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="px-5 py-2.5 bg-white border border-charcoal/15 text-charcoal rounded-full text-xs font-semibold flex items-center gap-2 hover:bg-charcoal/5 transition"
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="px-5 py-2.5 bg-charcoal text-white rounded-full text-xs font-semibold flex items-center gap-2 hover:bg-black transition shadow-sm"
                       >
-                        <Upload size={16} />
-                        Upload from Phone
+                        <Camera size={16} className="text-emerald-400" />
+                        Take Photo (Phone)
+                      </button>
+                      <button
+                        onClick={() => galleryInputRef.current?.click()}
+                        className="px-4 py-2.5 bg-white border border-charcoal/15 text-charcoal rounded-full text-xs font-semibold flex items-center gap-2 hover:bg-charcoal/5 transition"
+                      >
+                        <Upload size={15} />
+                        Upload
+                      </button>
+                      <button
+                        onClick={addSamplePhoto}
+                        className="px-3 py-2 bg-amber-50 text-amber-800 border border-amber-200 rounded-full text-[11px] font-medium hover:bg-amber-100 transition flex items-center gap-1.5"
+                        title="Click to test assessment with demo sofa photo"
+                      >
+                        <Sparkles size={12} className="text-amber-600" />
+                        Demo Photo
                       </button>
                     </div>
                   </div>
@@ -389,11 +488,14 @@ const SofaRepair: React.FC = () => {
                             className="w-full h-full object-cover cursor-pointer hover:scale-105 transition-transform duration-300"
                             onClick={() => setSelectedPreviewImage(img)}
                           />
+                          <span className="absolute bottom-1.5 left-1.5 px-2 py-0.5 bg-black/60 backdrop-blur-sm text-[10px] text-white font-medium rounded">
+                            Photo #{index + 1}
+                          </span>
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                             <button
                               onClick={() => setSelectedPreviewImage(img)}
                               className="p-2 bg-white/90 text-charcoal rounded-full hover:bg-white transition"
-                              title="Preview"
+                              title="Full Preview"
                             >
                               <Eye size={14} />
                             </button>
@@ -414,7 +516,7 @@ const SofaRepair: React.FC = () => {
                         className="aspect-square rounded-xl border-2 border-dashed border-charcoal/20 flex flex-col items-center justify-center text-charcoal/50 hover:border-wood hover:text-wood transition bg-white/40"
                       >
                         <Plus size={24} />
-                        <span className="text-[10px] font-bold uppercase mt-1">Add More</span>
+                        <span className="text-[10px] font-bold uppercase mt-1">Add Photo</span>
                       </button>
                     </div>
 
@@ -425,14 +527,20 @@ const SofaRepair: React.FC = () => {
                         className="flex-1 py-3 px-5 bg-charcoal text-white rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 hover:bg-black transition shadow-lg"
                       >
                         <CheckCircle2 size={16} className="text-emerald-400" />
-                        Request Repair Estimate ({capturedImages.length})
+                        Request Free Estimate ({capturedImages.length})
                       </button>
                       <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="py-3 px-4 bg-white border border-charcoal/10 text-charcoal rounded-xl text-xs font-semibold flex items-center justify-center gap-2 hover:bg-charcoal/5 transition"
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="py-3 px-4 bg-wood text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 hover:bg-wood/90 transition shadow-sm"
+                      >
+                        <Camera size={14} />
+                        Snap More
+                      </button>
+                      <button
+                        onClick={() => galleryInputRef.current?.click()}
+                        className="py-3 px-3 bg-white border border-charcoal/10 text-charcoal rounded-xl text-xs font-semibold flex items-center justify-center gap-2 hover:bg-charcoal/5 transition"
                       >
                         <Upload size={14} />
-                        Upload
                       </button>
                     </div>
                   </div>
@@ -440,12 +548,17 @@ const SofaRepair: React.FC = () => {
               </div>
 
               {/* Floating Camera Button */}
-              <div className="mt-6 flex justify-end">
+              <div className="mt-6 flex items-center justify-between">
+                <span className="text-[11px] text-charcoal/50 font-medium">
+                  {capturedImages.length > 0 
+                    ? 'Tap the camera button to add more damage photos' 
+                    : 'Tap the button to open instant camera tool'}
+                </span>
                 <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  whileHover={{ scale: 1.08 }}
+                  whileTap={{ scale: 0.92 }}
                   onClick={() => startCamera()}
-                  className="w-16 h-16 bg-wood text-white rounded-full shadow-2xl flex items-center justify-center group relative overflow-hidden ring-4 ring-wood/20 hover:ring-wood/40 transition-all"
+                  className="w-16 h-16 bg-wood text-white rounded-full shadow-2xl flex items-center justify-center group relative overflow-hidden ring-4 ring-wood/20 hover:ring-wood/40 transition-all cursor-pointer"
                   aria-label="Open Camera Tool"
                   title="Open Camera to capture sofa photos"
                 >
@@ -488,17 +601,17 @@ const SofaRepair: React.FC = () => {
                   </div>
                   <div>
                     <h3 className="text-sm font-bold uppercase tracking-wider text-charcoal">
-                      Live Sofa Camera
+                      Sofa Photo Capture
                     </h3>
-                    <p className="text-[10px] text-charcoal/50">Point camera at damaged area & tap Capture</p>
+                    <p className="text-[10px] text-charcoal/50">Point at damaged area & tap the round button</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={switchCameraFacing}
-                    disabled={cameraLoading || !!cameraError}
-                    className="p-2.5 rounded-full hover:bg-charcoal/5 text-charcoal/70 transition-colors disabled:opacity-30"
-                    title="Switch Front/Rear Camera"
+                    disabled={cameraLoading}
+                    className="p-2.5 rounded-full hover:bg-charcoal/5 text-charcoal/70 transition-colors"
+                    title="Flip Camera (Front/Back)"
                   >
                     <RefreshCw size={18} />
                   </button>
@@ -512,27 +625,33 @@ const SofaRepair: React.FC = () => {
               </div>
 
               {/* Viewfinder Window */}
-              <div className="relative aspect-[4/3] sm:aspect-video bg-black overflow-hidden flex items-center justify-center">
-                {/* Camera Error / Permission Fallback */}
+              <div className="relative aspect-[4/3] sm:aspect-video bg-neutral-900 overflow-hidden flex items-center justify-center">
+                {/* Fallback View when Live Video Stream is unavailable */}
                 {cameraError ? (
                   <div className="p-6 text-center text-white space-y-4 max-w-md">
-                    <div className="w-12 h-12 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center mx-auto">
-                      <AlertCircle size={28} />
+                    <div className="w-14 h-14 bg-wood/20 text-wood rounded-full flex items-center justify-center mx-auto ring-4 ring-wood/20">
+                      <Camera size={30} />
                     </div>
-                    <p className="text-xs text-white/80 leading-relaxed">{cameraError}</p>
-                    <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold">Ready to Capture Photo</h4>
+                      <p className="text-xs text-white/70 leading-relaxed">
+                        Tap "Take Photo" to launch your device camera or pick from gallery.
+                      </p>
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2.5 justify-center pt-2">
                       <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="px-5 py-3 bg-wood text-white rounded-full text-xs font-bold uppercase tracking-wider hover:bg-wood/90 transition flex items-center justify-center gap-2 shadow-lg"
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="px-5 py-3 bg-wood text-white rounded-full text-xs font-bold uppercase tracking-wider hover:bg-wood/90 transition flex items-center justify-center gap-2 shadow-lg cursor-pointer"
                       >
                         <Camera size={16} />
-                        Use Phone Camera / Photos
+                        Take Photo (Camera)
                       </button>
                       <button
-                        onClick={() => startCamera()}
-                        className="px-5 py-3 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold uppercase tracking-wider transition"
+                        onClick={() => galleryInputRef.current?.click()}
+                        className="px-5 py-3 bg-white/10 hover:bg-white/20 text-white rounded-full text-xs font-bold uppercase tracking-wider transition flex items-center justify-center gap-2"
                       >
-                        Retry Camera
+                        <Upload size={16} />
+                        Choose File
                       </button>
                     </div>
                   </div>
@@ -545,25 +664,29 @@ const SofaRepair: React.FC = () => {
                       playsInline
                       muted
                       onLoadedMetadata={() => setIsStreamReady(true)}
+                      onCanPlay={() => setIsStreamReady(true)}
                       className={`w-full h-full object-cover transition-opacity duration-300 ${
                         isStreamReady ? 'opacity-100' : 'opacity-0'
                       }`}
                     />
 
-                    {/* Canvas for taking snapshot */}
-                    <canvas ref={canvasRef} className="hidden" />
-
                     {/* Camera Loading Spinner */}
                     {(!isStreamReady || cameraLoading) && (
-                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-white gap-3 z-10">
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/85 text-white gap-3 z-10">
                         <RefreshCw size={32} className="animate-spin text-wood" />
-                        <span className="text-xs font-medium tracking-wide">Starting Camera...</span>
+                        <span className="text-xs font-medium tracking-wide">Initializing Camera...</span>
+                        <button
+                          onClick={() => cameraInputRef.current?.click()}
+                          className="mt-2 text-[11px] underline text-white/60 hover:text-white"
+                        >
+                          Or use device camera directly
+                        </button>
                       </div>
                     )}
 
                     {/* Shutter Flash Animation */}
                     {isFlashing && (
-                      <div className="absolute inset-0 bg-white z-30 pointer-events-none animate-fade-out" />
+                      <div className="absolute inset-0 bg-white z-30 pointer-events-none animate-pulse" />
                     )}
 
                     {/* Viewfinder Target Frame */}
@@ -578,10 +701,10 @@ const SofaRepair: React.FC = () => {
                     <AnimatePresence>
                       {justCaptured && (
                         <motion.div
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -10 }}
-                          className="absolute top-4 bg-emerald-600/90 backdrop-blur-md text-white text-xs font-bold px-4 py-2 rounded-full flex items-center gap-2 shadow-lg z-20"
+                          initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.9 }}
+                          className="absolute top-4 bg-emerald-600/95 backdrop-blur-md text-white text-xs font-bold px-4 py-2 rounded-full flex items-center gap-2 shadow-2xl z-20"
                         >
                           <Check size={16} />
                           Photo Captured! ({capturedImages.length} Saved)
@@ -607,38 +730,49 @@ const SofaRepair: React.FC = () => {
               </div>
 
               {/* Controls Footer */}
-              <div className="p-5 sm:p-6 bg-white flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-charcoal/5">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="text-xs font-semibold text-charcoal/70 hover:text-charcoal flex items-center gap-2 order-2 sm:order-1"
-                >
-                  <Upload size={16} />
-                  <span>Choose from Gallery</span>
-                </button>
+              <div className="p-4 sm:p-6 bg-white flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-charcoal/5">
+                <div className="flex items-center gap-3 order-2 sm:order-1">
+                  <button
+                    type="button"
+                    onClick={() => galleryInputRef.current?.click()}
+                    className="text-xs font-semibold text-charcoal/70 hover:text-charcoal flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-charcoal/5 transition"
+                  >
+                    <ImageIcon size={16} />
+                    <span>Gallery</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => cameraInputRef.current?.click()}
+                    className="text-xs font-semibold text-charcoal/70 hover:text-charcoal flex items-center gap-1.5 px-3 py-2 rounded-lg hover:bg-charcoal/5 transition"
+                  >
+                    <Camera size={16} />
+                    <span>Phone Camera</span>
+                  </button>
+                </div>
 
-                {/* Shutter Button */}
-                <div className="flex items-center gap-6 order-1 sm:order-2">
+                {/* Main Shutter Button - ALWAYS ACTIVE */}
+                <div className="flex items-center gap-4 order-1 sm:order-2">
                   <motion.button
-                    whileTap={{ scale: 0.9 }}
+                    whileTap={{ scale: 0.88 }}
                     onClick={captureImage}
-                    disabled={cameraLoading || !!cameraError}
-                    className="w-18 h-18 sm:w-20 sm:h-20 rounded-full border-4 border-wood p-1.5 flex items-center justify-center transition-all disabled:opacity-40"
+                    className="w-18 h-18 sm:w-20 sm:h-20 rounded-full border-4 border-wood p-1.5 flex items-center justify-center transition-all shadow-xl hover:border-wood/80 active:scale-95 cursor-pointer"
                     title="Tap to capture photo"
                   >
-                    <div className="w-full h-full bg-wood rounded-full flex items-center justify-center text-white shadow-xl hover:bg-wood/90 transition-transform active:scale-95">
-                      <Camera size={26} />
+                    <div className="w-full h-full bg-wood rounded-full flex items-center justify-center text-white shadow-inner hover:bg-wood/90 transition-transform">
+                      <Camera size={28} />
                     </div>
                   </motion.button>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={closeCameraModal}
-                  className="px-6 py-2.5 bg-charcoal text-white rounded-full text-xs font-bold uppercase tracking-wider hover:bg-black transition-colors order-3"
-                >
-                  {capturedImages.length > 0 ? `Done (${capturedImages.length})` : 'Cancel'}
-                </button>
+                <div className="flex items-center gap-2 order-3">
+                  <button
+                    type="button"
+                    onClick={closeCameraModal}
+                    className="px-6 py-2.5 bg-charcoal text-white rounded-full text-xs font-bold uppercase tracking-wider hover:bg-black transition-colors"
+                  >
+                    {capturedImages.length > 0 ? `Done (${capturedImages.length})` : 'Close'}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -766,7 +900,7 @@ const SofaRepair: React.FC = () => {
                   <div className="pt-2">
                     <button
                       type="submit"
-                      className="w-full py-3.5 bg-wood text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-wood/90 transition shadow-lg flex items-center justify-center gap-2"
+                      className="w-full py-3.5 bg-wood text-white rounded-xl text-xs font-bold uppercase tracking-wider hover:bg-wood/90 transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <PhoneCall size={16} />
                       Submit Photos & Request Callback
