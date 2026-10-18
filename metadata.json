@@ -1,0 +1,5 @@
+{
+  "name": "Akshara Furnitures",
+  "description": "A high-end, minimalist furniture showcase featuring elegant designs for modern living spaces.",
+  "requestFramePermissions": ["camera"]
+}
